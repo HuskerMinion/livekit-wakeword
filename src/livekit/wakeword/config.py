@@ -58,6 +58,11 @@ class AugmentationConfig(BaseModel):
     rounds: int = 1
     background_paths: list[str] = Field(default_factory=lambda: ["./data/backgrounds"])
     rir_paths: list[str] = Field(default_factory=lambda: ["./data/rirs"])
+    num_workers: int | None = Field(
+        default=None,
+        description="Processes for augmentation (None = all CPU cores, 1 = serial). "
+        "Parallel augmentation needs the fork start method (Linux); elsewhere it runs serially.",
+    )
 
 
 class ModelConfig(BaseModel):
