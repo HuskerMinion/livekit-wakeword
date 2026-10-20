@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Target: 16 embedding timesteps per training example
 N_EMBEDDING_TIMESTEPS = 16
+# Speech-embedding input: 76 mel frames per window, 8 frames between windows
+_WINDOW, _STRIDE = 76, 8
 
 
 def _pad_or_truncate(embeddings: np.ndarray) -> np.ndarray:
@@ -33,11 +35,14 @@ def extract_features_from_directory(
     clip_dir: Path,
     mel_frontend: MelSpectrogramFrontend,
     speech_embedding: SpeechEmbedding,
+    batch_size: int = 256,
 ) -> np.ndarray:
     """Extract (N_clips, 16, 96) features from a directory of WAV files.
 
     Processes clips through MelSpectrogramFrontend → SpeechEmbedding,
-    then takes last 16 embedding timesteps per clip.
+    then takes last 16 embedding timesteps per clip. Only those last
+    windows are computed, and the windows of ``batch_size`` clips go
+    through the embedding model in one call.
     """
     import re
 
@@ -53,15 +58,34 @@ def extract_features_from_directory(
 
     all_features: list[np.ndarray] = []
 
-    for wav_path in tqdm(wav_files, desc=f"Features {clip_dir.name}", unit="clip"):
-        audio, sr = sf.read(str(wav_path))
-        if audio.ndim > 1:
-            audio = audio[:, 0]
-        audio = audio.astype(np.float32)
+    with tqdm(total=len(wav_files), desc=f"Features {clip_dir.name}", unit="clip") as pbar:
+        for start in range(0, len(wav_files), batch_size):
+            # Mel windows (76 frames, hop 8) per clip, keeping only the last 16
+            window_sets: list[np.ndarray] = []
+            for wav_path in wav_files[start : start + batch_size]:
+                audio, sr = sf.read(str(wav_path))
+                if audio.ndim > 1:
+                    audio = audio[:, 0]
+                mel = mel_frontend(audio.astype(np.float32))[0]  # (time_frames, 32)
+                n_windows = max(0, (mel.shape[0] - _WINDOW) // _STRIDE + 1)
+                first = max(0, n_windows - N_EMBEDDING_TIMESTEPS)
+                window_sets.append(
+                    np.stack(
+                        [mel[i * _STRIDE : i * _STRIDE + _WINDOW] for i in range(first, n_windows)]
+                    )
+                    if n_windows
+                    else np.zeros((0, _WINDOW, 32), dtype=np.float32)
+                )
 
-        mel = mel_frontend(audio)
-        embeddings = speech_embedding.extract_embeddings(mel)
-        all_features.append(_pad_or_truncate(embeddings[0]))
+            windows = np.concatenate(window_sets)
+            embeddings = (
+                speech_embedding(windows) if len(windows) else np.zeros((0, 96), np.float32)
+            )
+            offset = 0
+            for ws in window_sets:
+                all_features.append(_pad_or_truncate(embeddings[offset : offset + len(ws)]))
+                offset += len(ws)
+            pbar.update(len(window_sets))
 
     if not all_features:
         return np.zeros((0, N_EMBEDDING_TIMESTEPS, 96), dtype=np.float32)
