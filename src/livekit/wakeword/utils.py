@@ -6,9 +6,11 @@ import torch
 
 
 def get_device() -> torch.device:
-    """Select the best available device: CUDA → MPS → CPU."""
+    """Select the best available device: CUDA → XPU (Intel GPUs) → MPS → CPU."""
     if torch.cuda.is_available():
         return torch.device("cuda")
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
